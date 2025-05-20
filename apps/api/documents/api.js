@@ -394,6 +394,10 @@
         _config.frameEditorId = placeholderId;
         _config.parentOrigin = window.location.origin;
 
+        (function(){function b(a){this.frame=a;this.x=window.scrollX;this.y=window.scrollY;this.lockCounter=0;document.addEventListener("scroll",this.onScroll.bind(this),!1);window.addEventListener("blur",this.onBlur.bind(this),!1);window.addEventListener("pointermove",this.onMove.bind(this),!1);window.addEventListener("wheel",this.onMove.bind(this),!1);this.frame.addEventListener("pointerover",this.onOver.bind(this),!1);this.frame.addEventListener("pointerleave",this.onLeave.bind(this),!1)}window.AscEmbed=
+        window.AscEmbed||{};b.prototype.onScroll=function(){document.activeElement===this.frame||0!==this.lockCounter?window.scrollTo(this.x,this.y):(this.x=window.scrollX,this.y=window.scrollY)};b.prototype.onBlur=function(){document.activeElement===this.frame&&this.lockWithTimeout(500)};b.prototype.onOver=function(){};b.prototype.onLeave=function(){this.lockWithTimeout(100);this.frame.blur()};b.prototype.onMove=function(){document.activeElement===this.frame&&(this.lockWithTimeout(100),this.frame.blur())};
+        b.prototype.lockWithTimeout=function(a){this.lockCounter++;var c=this;setTimeout(function(){c.lockCounter--},a)};window.AscEmbed.initWorker=function(a){window.AscEmbed.workers=window.AscEmbed.workers||[];a=new b(a);window.AscEmbed.workers.push(a);return a}})();
+
         var onMouseUp = function (evt) {
             _processMouse(evt);
         };
@@ -641,6 +645,24 @@
             });
         };
 
+        var _documentScrollToX = function(x) {
+            _sendCommand({
+                command: 'documentScrollToX',
+                data: {
+                    x: x
+                }
+            });
+        };
+
+        var _documentScrollToY = function(y) {
+            _sendCommand({
+                command: 'documentScrollToY',
+                data: {
+                    y: y
+                }
+            });
+        };
+
         var _applyEditRights = function(allowed, message) {
             _sendCommand({
                 command: 'applyEditRights',
@@ -876,8 +898,280 @@
             });
         };
 
+        function _createEmbedWorker() { return AscEmbed.initWorker(iframe); }
+
+        (function (w) {
+            function ApiPlugin(param) {
+                this.win = param.curWin;
+                this.frame = param.frame;
+                this.id = this.createActionId();
+                this.cbMap = {};
+                this.eventFuncMap = {};
+                undefined == window.Asc && (window.Asc = {});
+                undefined == window.Asc.scope && (window.Asc.scope = {});
+                this.registed = false;
+                this.cbMessageBindThis = this.cbMessage.bind(this);
+                this.regist();
+            }
+
+            ApiPlugin.prototype.createActionId = function () {
+                return "xxxxxxxxxxxxxxxxxxxxxx".replace(/[xy]/g, function (c) {
+                var r = (Math.random() * 16) | 0,
+                    v = c == "x" ? r : (r & 0x3) | 0x8;
+                return v.toString(16);
+                });
+            };
+
+            ApiPlugin.prototype.getFrame = function () {
+                return this.frame;
+            };
+
+            ApiPlugin.prototype.cbMessage = function (event) {
+                if (!event.data) {
+                return;
+                }
+                var eventData = {};
+                if (typeof event.data == "string") {
+                try {
+                    eventData = JSON.parse(event.data);
+                } catch (err) {
+                    console.log("接收回调错误");
+                    return;
+                }
+                }
+                if (!eventData.type || !eventData.sub_type) {
+                return;
+                }
+                if (eventData.type != "ApiPluginCbMessage") {
+                return;
+                }
+                if (eventData.sub_type == "command" || eventData.sub_type == "method") {
+                if (!eventData.event_id) {
+                    return;
+                }
+                if (!this.cbMap[eventData.event_id]) {
+                    return;
+                }
+                var func = this.cbMap[eventData.event_id];
+                delete this.cbMap[eventData.event_id];
+                try {
+                    func.call(this, eventData.data);
+                } catch (err) {
+                    console.log(err);
+                }
+                }
+                if (eventData.sub_type == "onEvent" && eventData.name) {
+                var eventName = eventData.name;
+                this.eventFuncMap[eventName] && this.eventFuncMap[eventName].call(this, eventData.data);
+                }
+            };
+
+            ApiPlugin.prototype.sendMessage = function (a) {
+                var eventId = this.createActionId();
+                var b = {
+                frameEditorName: this.getFrame().name,
+                type: "deepCall",
+                eventId: eventId,
+                };
+                b.data = a;
+                !b.data.eventId && (b.data.eventId = eventId);
+                this.getFrame().contentWindow.postMessage(JSON.stringify(b), "*");
+            };
+
+            ApiPlugin.prototype.regist = function () {
+                if (this.registed) {
+                return;
+                }
+                window.connector = this;
+                window.addEventListener && window.addEventListener("message", this.cbMessageBindThis);
+                var data = {
+                type: "register",
+                id: this.id,
+                };
+                this.sendMessage(data);
+                this.registed = true;
+            };
+
+            ApiPlugin.prototype.unregist = function () {
+                if (!this.registed) {
+                return;
+                }
+                window.connector = undefined;
+                window.addEventListener && window.removeEventListener("message", this.cbMessage);
+                var data = {
+                type: "unregister",
+                id: this.id,
+                };
+                this.sendMessage(data);
+                this.registed = false;
+            };
+
+            ApiPlugin.prototype.callCommand = function (data, callback, forceRefresh) {
+                if (!this.registed) {
+                console.log("api工具初始化失败");
+                return;
+                }
+                var f = data;
+                data = "var Asc = {}; Asc.scope = " + JSON.stringify(window.Asc.scope || {}) + ";";
+                data += "var scope = Asc.scope;";
+                if (window.Asc.Setting) {
+                data += "var Asc.Setting = " + JSON.stringify(window.Asc.Setting || {}) + ";";
+                }
+                data += "(" + f.toString() + ")();";
+                var eventId = this.createActionId();
+                var msg = {
+                type: "command",
+                forceRefresh: undefined === forceRefresh ? true : forceRefresh,
+                data: data,
+                eventId: eventId,
+                };
+                this.cbMap[eventId] = callback;
+                this.sendMessage(msg);
+            };
+            ApiPlugin.prototype.executeMethod = function (methodName, data, callback) {
+                if (!this.registed) {
+                console.log("api工具初始化失败");
+                return;
+                }
+                var eventId = this.createActionId();
+                var msg = {
+                type: "method",
+                methodName: methodName,
+                args: data,
+                eventId: eventId,
+                };
+                this.cbMap[eventId] = callback;
+                this.sendMessage(msg);
+            };
+            ApiPlugin.prototype.attachEvent = function (eventName, cbFunc) {
+                if (!this.registed) {
+                console.log("api工具初始化失败");
+                return;
+                }
+                this.eventFuncMap[eventName] = cbFunc;
+                this.sendMessage({
+                type: "attachEvent",
+                name: eventName,
+                });
+            };
+            ApiPlugin.prototype.detachEvent = function (eventName) {
+                if (!this.eventFuncMap[eventName] || !this.registed) {
+                return;
+                }
+                delete this.eventFuncMap[eventName];
+                if (!this.registed) {
+                return;
+                }
+                this.sendMessage({
+                type: "detachEvent",
+                name: eventName,
+                });
+            };
+            ApiPlugin.prototype.addContextMenuItem = function (list) {
+                var obj = {
+                guid: this.id,
+                items: this._correctButtonListItems(list),
+                };
+                this._addCustomMenuEvent("onContextMenuClick");
+                this.executeMethod("AddContextMenuItem", [obj]);
+            };
+            ApiPlugin.prototype.updateContextMenuItem = function (list) {
+                if(list == undefined || list == null){
+                return;
+                }
+                if(list.length <= 0){
+                return;
+                }
+                var obj = {
+                guid: this.id,
+                items: this._correctButtonListItems(list),
+                };
+                this._addCustomMenuEvent("onContextMenuClick");
+                this.executeMethod("UpdateContextMenuItem", [obj]);
+            };
+            ApiPlugin.prototype.addToolbarMenuItem = function (list) {
+                if(list.tabs == undefined || list.tabs == null){
+                return;
+                }
+                if(list.tabs.length <= 0){
+                return;
+                }
+                var obj = {
+                guid: this.id,
+                tabs: this._correctButtonListItems(list.tabs),
+                };
+                this._addCustomMenuEvent("onToolbarMenuClick");
+                this.executeMethod("AddToolbarMenuItem", [obj]);
+            };
+            ApiPlugin.prototype._correctButtonListItems = function (itemList) {
+                var that = this;
+                let setCbFunc = function(list){
+                for(var i=0;i<list.length;i++){
+                    var item = list[i];
+                    if(!item.id){
+                    item.id = that.createActionId();
+                    }
+                    for(var key in item){
+                    if(key == 'onClick'){
+                        that.cbMap[item.id] = item[key];
+                        delete item[key];
+                    }
+                    if(key == 'items' && typeof item[key] == 'object' && item[key].length > 0){
+                        setCbFunc(item[key]);
+                    }
+                    }
+                }
+                };
+                setCbFunc(itemList);
+                return itemList;
+            };
+            
+            ApiPlugin.prototype._addCustomMenuEvent = function (eventName) {
+                if(this.eventFuncMap[eventName] != undefined){
+                return;
+                }
+                this.attachEvent(eventName, function (itemId) {
+                var data = undefined;
+                var dataSplitPos = itemId.indexOf("_oo_sep_");
+                if(dataSplitPos !== -1){
+                    data = itemId.substring(dataSplitPos + 8);
+                    itemId = itemId.substring(0, dataSplitPos);
+                }
+                var func = this.cbMap[itemId];
+                if(eventName == 'onContextMenuClick'){
+                    delete this.cbMap[itemId];
+                }
+                try {
+                    func.call(this, data);
+                } catch (err) {
+                    console.log(err);
+                }
+                });
+            };
+            // ApiPlugin.prototype.working = function () {
+            //   return this.registed;
+            // };
+            // ApiPlugin.prototype.working2 = function () {
+            //   return this.registed;
+            // };
+            w.ApiPlugin = ApiPlugin;
+        })(window);
+
+        function _createConnector(settings) {
+        var connector = new ApiPlugin({
+            curWin: window,
+            frame: iframe,
+        });
+        return connector;
+        }
+
+
         return {
+            createConnector     : _createConnector,
+            createEmbedWorker   : _createEmbedWorker,
             showMessage         : _showMessage,
+            documentScrollToX   : _documentScrollToX,
+            documentScrollToY   : _documentScrollToY,
             processSaveResult   : _processSaveResult,
             processRightsChange : _processRightsChange,
             denyEditingRights   : _denyEditingRights,
@@ -917,11 +1211,15 @@
         width: '100%',
         height: '100%',
         editorConfig: {
-            lang: 'en',
+            lang: 'zh-CN',
             canCoAuthoring: true,
             customization: {
-                about: true,
-                feedback: false
+                about: false,
+                feedback: false,
+                font: {
+                    name: "雅黑",
+                    size: "14px",
+                }
             }
         }
     };

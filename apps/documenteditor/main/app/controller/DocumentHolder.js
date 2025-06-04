@@ -379,6 +379,7 @@ define([
             var me = this;
             if (me.api){
                 var key = event.keyCode;
+                console.log("[handleDocumentKeyDown]", key);
                 if (me.hkSpecPaste) {
                     me._needShowSpecPasteMenu = !event.shiftKey && !event.altKey && event.keyCode == Common.UI.Keys.CTRL;
                 }
